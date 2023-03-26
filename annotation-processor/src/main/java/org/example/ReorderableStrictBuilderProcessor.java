@@ -82,9 +82,15 @@ public class ReorderableStrictBuilderProcessor extends AbstractProcessor {
         TypeSpec falseType = TypeSpec.classBuilder("False").build();
         builderClassBuilder.addType(falseType);
 
+        String allFalseType = String.format(
+                "%s<%s>",
+                builderClassName.simpleName(),
+                String.join(", ", typeVariables.stream().map(v -> "False").toList()));
+
         builderClassBuilder.addMethod(
                 MethodSpec.methodBuilder("create")
-                        .returns(ParameterizedTypeName.get(null, builderClassName, typeVariables.stream().map(v -> )))
+                        .returns(builderClassName)
+                        .addCode(String.format("return new %s();", allFalseType))
                         .build()
         );
 
