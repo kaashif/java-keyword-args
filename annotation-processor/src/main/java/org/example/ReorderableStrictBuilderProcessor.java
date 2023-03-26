@@ -11,10 +11,7 @@ import javax.sound.sampled.CompoundControl;
 import javax.tools.JavaFileObject;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.example.ReorderableStrictBuilder")
@@ -28,12 +25,11 @@ public class ReorderableStrictBuilderProcessor extends AbstractProcessor {
             TypeElement annotatedClass = (TypeElement) annotatedElements.stream().findFirst().get();
 
             String packageName = processingEnv.getElementUtils().getPackageOf(annotatedClass).toString();
-            String builderClassName = annotatedClass.getSimpleName() + "Builder";
 
             Map<String, String> memberToType = extractMemberToTypeMap(annotatedClass);
 
             try {
-                writeBuilderFile(builderClassName, packageName, memberToType);
+                writeBuilderFile(annotatedClass.getSimpleName().toString(), packageName, memberToType);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
@@ -43,7 +39,7 @@ public class ReorderableStrictBuilderProcessor extends AbstractProcessor {
     }
 
     private static Map<String, String> extractMemberToTypeMap(TypeElement annotatedClass) {
-        Map<String, String> memberToType = new HashMap<>();
+        Map<String, String> memberToType = new TreeMap<>();
 
         annotatedClass
                 .getEnclosedElements()
@@ -59,56 +55,68 @@ public class ReorderableStrictBuilderProcessor extends AbstractProcessor {
         return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 
-    private void writeBuilderFile(String builderSimpleName, String packageName, Map<String, String> memberToType) throws IOException {
-        List<TypeVariableName> typeVariables = memberToType.keySet().stream().map(
-                memberName -> TypeVariableName.get("Has" + capitalize(memberName))
-        ).toList();
+    private static String makeParameterizedType(String typeName, List<String> parameters) {
+        return String.format("%s<%s>", typeName, String.join(", ", parameters));
+    }
 
-        ClassName builderClassName = ClassName.get(packageName, builderSimpleName);
-
-        TypeSpec.Builder builderClassBuilder = TypeSpec.classBuilder(builderSimpleName)
-                .addModifiers(Modifier.PUBLIC)
-                .addTypeVariables(typeVariables);
-
-        builderClassBuilder.addMethod(
-                MethodSpec.constructorBuilder()
-                        .addModifiers(Modifier.PRIVATE)
-                        .build()
-        );
-
-        TypeSpec trueType = TypeSpec.classBuilder("True").build();
-        builderClassBuilder.addType(trueType);
-
-        TypeSpec falseType = TypeSpec.classBuilder("False").build();
-        builderClassBuilder.addType(falseType);
-
-        String allFalseType = String.format(
-                "%s<%s>",
-                builderClassName.simpleName(),
-                String.join(", ", typeVariables.stream().map(v -> "False").toList()));
-
-        builderClassBuilder.addMethod(
-                MethodSpec.methodBuilder("create")
-                        .returns(builderClassName)
-                        .addCode(String.format("return new %s();", allFalseType))
-                        .build()
-        );
-
-        for (var entry : memberToType.entrySet()) {
-            var memberName = entry.getKey();
-            var typeName = entry.getValue();
-            builderClassBuilder.addField(ClassName.bestGuess(typeName), memberName, Modifier.PRIVATE);
-        }
-
-        TypeSpec builderClass = builderClassBuilder.build();
-
-        JavaFile javaFile = JavaFile.builder(packageName, builderClass)
-                .build();
-
+    private void writeBuilderFile(String simpleName, String packageName, Map<String, String> memberToType) throws IOException {
+        String builderSimpleName = simpleName + "Builder";
         JavaFileObject sourceFile = processingEnv.getFiler().createSourceFile(builderSimpleName);
-
         try (PrintWriter out = new PrintWriter(sourceFile.openWriter())) {
-            javaFile.writeTo(out);
+            out.printf("package %s;\n", packageName);
+
+            List<String> typeVariables = memberToType.keySet().stream().map(
+                    memberName -> "Has" + capitalize(memberName)
+            ).toList();
+
+            out.printf("public class %s {\n", makeParameterizedType(builderSimpleName, typeVariables));
+            out.printf("private %s() {}\n", builderSimpleName);
+            out.print("private static class True {}\n");
+            out.print("private static class False {}\n");
+
+            String allFalseBuilderType = makeParameterizedType(builderSimpleName, typeVariables.stream().map(v -> "False").toList());
+
+            out.printf("""
+            public static %s create() {
+              return new %s();
+            }
+            """, allFalseBuilderType, allFalseBuilderType);
+
+            var memberToTypeEntries = memberToType.entrySet().stream().toList();
+
+            for (int i = 0; i < memberToTypeEntries.size(); i++) {
+                var entry = memberToTypeEntries.get(i);
+                var memberName = entry.getKey();
+                var typeName = entry.getValue();
+                out.printf("private %s %s;\n", typeName, memberName);
+
+                var returnTypeArgs = new ArrayList<>(typeVariables);
+                returnTypeArgs.set(i, "True");
+
+                String returnType = makeParameterizedType(builderSimpleName, returnTypeArgs);
+
+                out.printf("""
+                public %s set%s(%s arg) {
+                    this.%s = arg;
+                    return (%s) this;
+                }
+                """, returnType, capitalize(memberName), typeName, memberName, returnType);
+            }
+
+
+            String allTrueBuilderType = makeParameterizedType(builderSimpleName, typeVariables.stream().map(v -> "True").toList());
+
+            out.printf("""
+            public static %s build(%s builder) {
+              return new %s(%s);
+            }
+            """,
+                    simpleName,
+                    allTrueBuilderType,
+                    simpleName,
+                    String.join(", ", memberToType.keySet().stream().map(member -> "builder."+member).toList()));
+
+            out.print("}\n");
         }
     }
 }
