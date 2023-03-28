@@ -1,4 +1,4 @@
-rootProject.name = "compile-time-builder"
+rootProject.name = "java-keyword-args"
 
 include("annotation-processor")
 include("example")
